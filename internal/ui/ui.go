@@ -1,8 +1,9 @@
 package ui
 
 import (
-	"bufio"
 	"fmt"
+
+	"github.com/CM-exe/staash/internal/protocol"
 )
 
 const banner = `
@@ -80,17 +81,17 @@ type AppInfo struct {
 	LastUpdate string
 }
 
-func DisplayBanner(w *bufio.Writer, info AppInfo) {
-	fmt.Fprint(w, banner)
-	fmt.Fprintf(w, "                 %s\n", info.Name)
-	fmt.Fprintln(w, "        Stash your data. Version everything.")
-	fmt.Fprintln(w)
+func DisplayBanner(w *protocol.Writer, info AppInfo) {
+	w.Banner(banner)
+	w.Bulk(fmt.Sprintf("                 %s\n", info.Name))
+	w.Bulk("        Stash your data. Version everything.")
+	w.Simple("")
 
-	fmt.Fprintf(w, "  %-14s %s\n", "Version:", info.Version)
-	fmt.Fprintf(w, "  %-14s %s\n", "Author:", info.Author)
-	fmt.Fprintf(w, "  %-14s %s\n", "License:", info.License)
-	fmt.Fprintf(w, "  %-14s %s\n", "Repository:", info.Repository)
-	fmt.Fprintf(w, "  %-14s %s\n", "Last update:", info.LastUpdate)
+	w.Bulk(fmt.Sprintf("  %-14s %s\n", "Version:", info.Version))
+	w.Bulk(fmt.Sprintf("  %-14s %s\n", "Author:", info.Author))
+	w.Bulk(fmt.Sprintf("  %-14s %s\n", "License:", info.License))
+	w.Bulk(fmt.Sprintf("  %-14s %s\n", "Repository:", info.Repository))
+	w.Bulk(fmt.Sprintf("  %-14s %s\n", "Last update:", info.LastUpdate))
 
 	fmt.Println()
 }

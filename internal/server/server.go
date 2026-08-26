@@ -3,19 +3,40 @@ package server
 import (
 	"bufio"
 	"errors"
-	"fmt"
+	"log"
 	"net"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/CM-exe/staash/internal/protocol"
 	"github.com/CM-exe/staash/internal/store"
-	"github.com/CM-exe/staash/internal/ui"
 )
 
 type Config struct {
-	Addr        string
-	IdleTimeout time.Duration
+	Addr         string
+	MaxLine      int           // maximum request line in bytes
+	IdleTimeout  time.Duration // close connections that say nothing for this long
+	WriteTimeout time.Duration // fail writes that take longer than this
+	Logger       *log.Logger
+}
+
+func (c *Config) withDefaults() {
+	if c.Addr == "" {
+		c.Addr = "127.0.0.1:6380"
+	}
+	if c.MaxLine == 0 {
+		c.MaxLine = 64 << 10 // 64 KiB
+	}
+	if c.IdleTimeout == 0 {
+		c.IdleTimeout = 5 * time.Minute
+	}
+	if c.WriteTimeout == 0 {
+		c.WriteTimeout = 30 * time.Second
+	}
+	if c.Logger == nil {
+		c.Logger = log.Default()
+	}
 }
 
 type Server struct {
@@ -30,12 +51,7 @@ type Server struct {
 }
 
 func New(st *store.Store, cfg Config) *Server {
-	if cfg.Addr == "" {
-		cfg.Addr = "127.0.0.1:6380"
-	}
-	if cfg.IdleTimeout == 0 {
-		cfg.IdleTimeout = 5 * time.Minute
-	}
+	cfg.withDefaults()
 	return &Server{
 		cfg:   cfg,
 		st:    st,
@@ -48,7 +64,7 @@ func New(st *store.Store, cfg Config) *Server {
 func (s *Server) Listen() error {
 	ln, err := net.Listen("tcp", s.cfg.Addr)
 	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+		return err
 	}
 	s.ln = ln
 	return nil
@@ -78,7 +94,7 @@ func (s *Server) Serve() error {
 			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
-			return fmt.Errorf("accept: %w", err)
+			return err
 		}
 		s.trackConn(conn, true)
 		s.wg.Add(1)
@@ -129,26 +145,45 @@ func (s *Server) Close() error {
 }
 
 func (s *Server) handleConn(conn net.Conn) {
-	r := bufio.NewReader(conn)
-	w := bufio.NewWriter(conn)
+	reader := bufio.NewReaderSize(conn, 4096)
+	bw := bufio.NewWriter(conn)
+	w := protocol.NewWriter(bw)
+	sess := newSession(s.st)
+
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(s.cfg.IdleTimeout)); err != nil {
 			return
 		}
-		line, err := r.ReadString('\n')
+		line, err := readLine(reader, s.cfg.MaxLine)
 		if err != nil {
-			return // EOF, timeout, or the client vanished.
+			if errors.Is(err, errLineTooLong) {
+				_ = conn.SetWriteDeadline(time.Now().Add(s.cfg.WriteTimeout))
+				_ = w.Error("request line exceeds limit of 64 KiB")
+				_ = w.Flush()
+			}
+			return // EOF, timeout, or a client we no longer trust to be in sync
 		}
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
+		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		if err := conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
+
+		cmd, perr := protocol.Parse(line)
+		if err := conn.SetWriteDeadline(time.Now().Add(s.cfg.WriteTimeout)); err != nil {
 			return
 		}
-		if quit := s.execute(w, fields); quit {
-			w.Flush()
-			return
+		if perr != nil {
+			if err := w.Error(perr.Error()); err != nil {
+				return
+			}
+		} else {
+			quit, err := sess.dispatch(w, cmd)
+			if err != nil {
+				return
+			}
+			if quit {
+				_ = w.Flush()
+				return
+			}
 		}
 		if err := w.Flush(); err != nil {
 			return
@@ -156,82 +191,27 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 }
 
-// execute is deliberately crude; Phase 3 replaces it.
-func (s *Server) execute(w *bufio.Writer, fields []string) (quit bool) {
-	cmd := strings.ToUpper(fields[0])
-	args := fields[1:]
-	reply := func(format string, a ...any) {
-		fmt.Fprintf(w, format+"\n", a...)
+var errLineTooLong = errors.New("request line exceeds limit of 64 KiB")
+
+// readLine reads up to and including '\n, enforcing a maximum length so a
+// malicious or buggy client cannot make the server allocate without bound.
+func readLine(r *bufio.Reader, max int) (string, error) {
+	var buf []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		buf = append(buf, chunk...)
+		if err == bufio.ErrBufferFull {
+			if len(buf) > max {
+				return "", errLineTooLong
+			}
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if len(buf) > max {
+			return "", errLineTooLong
+		}
+		return strings.TrimRight(string(buf), "\r\n"), nil
 	}
-	switch cmd {
-	case "PING":
-		reply("PONG")
-	case "QUIT":
-		reply("BYE")
-		return true
-	case "SET":
-		if len(args) != 2 {
-			reply("ERR wrong number of arguments for SET command")
-			break
-		}
-		s.st.Set(args[0], args[1])
-		reply("OK")
-	case "GET":
-		if len(args) != 1 {
-			reply("ERR wrong number of arguments for GET command")
-			break
-		}
-		if v, ok := s.st.Get(args[0]); ok {
-			reply("%s", v)
-		} else {
-			reply("(nil)")
-		}
-	case "DEL":
-		if len(args) != 1 {
-			reply("ERR wrong number of arguments for DEL command")
-			break
-		}
-		if s.st.Del(args[0]) {
-			reply("(1)")
-		} else {
-			reply("(0)")
-		}
-	case "EXISTS":
-		if len(args) != 1 {
-			reply("ERR wrong number of arguments for EXISTS command")
-			break
-		}
-		if s.st.Exists(args[0]) {
-			reply("(1)")
-		} else {
-			reply("(0)")
-		}
-	case "KEYS":
-		keys := s.st.Keys()
-		reply("%d", len(keys))
-		for _, k := range keys {
-			reply("%s", k)
-		}
-	case "HELP":
-		ui.DisplayBanner(w, ui.AppInfo{
-			Name:       "Staash",
-			Version:    "0.1.0",
-			Author:     "CM-exe",
-			Repository: "github.com/CM-exe/staash",
-			License:    "MIT",
-			LastUpdate: "2026-08-26",
-		})
-		reply("Commands:")
-		reply("  PING")
-		reply("  QUIT")
-		reply("  SET <key> <value>")
-		reply("  GET <key>")
-		reply("  DEL <key>")
-		reply("  EXISTS <key>")
-		reply("  KEYS")
-		reply("  HELP")
-	default:
-		reply("ERR unknown command '%s'", cmd)
-	}
-	return false
 }
