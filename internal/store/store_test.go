@@ -78,3 +78,19 @@ func TestConcurrentAccess(t *testing.T) {
 		t.Fatalf("Len() = %d; want 500", s.Len())
 	}
 }
+
+func TestApplyBatchIsAtomic(t *testing.T) {
+	s := New()
+	s.Set("x", "old")
+	s.ApplyBatch([]Mutation{
+		{Op: OpSet, Key: "x", Value: "new"},
+		{Op: OpSet, Key: "y", Value: "y"},
+		{Op: OpDel, Key: "z"},
+	})
+	if v, _ := s.Get("x"); v != "new" {
+		t.Fatalf("Get(x) = %q; want new", v)
+	}
+	if !s.Exists("y") {
+		t.Fatal("expected y to exist")
+	}
+}

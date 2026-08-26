@@ -5,6 +5,23 @@ import (
 	"sync"
 )
 
+// Op identifies the king of a Mutation.
+type Op byte
+
+const (
+	OpSet Op = 1
+	OpDel Op = 2
+)
+
+// Mutation is a single absolute change to the keyspace. It is absolute, not
+// relative: applying the same mutation twice produces the same result. The WAL
+// relies on that property during replay.
+type Mutation struct {
+	Op    Op
+	Key   string
+	Value string // empty for OpDel
+}
+
 /** Store is a concurency-safe map[string]string
  *
  * Invariant : every exported method either takes s.mu (Mutex attribute)
@@ -67,4 +84,17 @@ func (s *Store) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.data)
+}
+
+func (s *Store) ApplyBatch(muts []Mutation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, m := range muts {
+		switch m.Op {
+		case OpSet:
+			s.data[m.Key] = m.Value
+		case OpDel:
+			delete(s.data, m.Key)
+		}
+	}
 }

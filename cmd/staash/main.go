@@ -7,16 +7,24 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/CM-exe/staash/internal/engine"
 	"github.com/CM-exe/staash/internal/server"
-	"github.com/CM-exe/staash/internal/store"
 )
 
 func main() {
-	addr := flag.String("addr", "127.0.0.1:6380", "TCP address to listen on")
+	var (
+		addr    = flag.String("addr", "127.0.0.1:6380", "TCP address to listen on")
+		dir     = flag.String("dir", "./data", "directory to store data")
+		syncWAL = flag.Bool("sync", true, "fsync the write-ahead log on every write (slower but safer)")
+	)
 	flag.Parse()
 
-	st := store.New()
-	srv := server.New(st, server.Config{Addr: *addr})
+	eng, err := engine.Open(engine.Options{Dir: *dir, SyncWAL: *syncWAL})
+	if err != nil {
+		log.Fatalf("open database: %v", err)
+	}
+	defer eng.Close()
+	srv := server.New(eng, server.Config{Addr: *addr})
 	if err := srv.Listen(); err != nil {
 		log.Fatal(err)
 	}

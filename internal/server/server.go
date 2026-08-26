@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/CM-exe/staash/internal/engine"
 	"github.com/CM-exe/staash/internal/protocol"
-	"github.com/CM-exe/staash/internal/store"
 )
 
 type Config struct {
@@ -41,7 +41,7 @@ func (c *Config) withDefaults() {
 
 type Server struct {
 	cfg Config
-	st  *store.Store
+	eng *engine.Engine
 	ln  net.Listener
 
 	mu      sync.Mutex
@@ -50,11 +50,11 @@ type Server struct {
 	wg      sync.WaitGroup
 }
 
-func New(st *store.Store, cfg Config) *Server {
+func New(e *engine.Engine, cfg Config) *Server {
 	cfg.withDefaults()
 	return &Server{
 		cfg:   cfg,
-		st:    st,
+		eng:   e,
 		conns: make(map[net.Conn]struct{}),
 	}
 }
@@ -148,7 +148,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	reader := bufio.NewReaderSize(conn, 4096)
 	bw := bufio.NewWriter(conn)
 	w := protocol.NewWriter(bw)
-	sess := newSession(s.st)
+	sess := newSession(s.eng)
 
 	for {
 		if err := conn.SetReadDeadline(time.Now().Add(s.cfg.IdleTimeout)); err != nil {
