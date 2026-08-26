@@ -145,7 +145,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		if err := conn.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
 			return
 		}
-		if quit != s.execute(w, fields); quit {
+		if quit := s.execute(w, fields); quit {
 			w.Flush()
 			return
 		}
