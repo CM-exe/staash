@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/CM-exe/staash/internal/store"
+	"github.com/CM-exe/staash/internal/ui"
 )
 
 type Config struct {
@@ -211,6 +212,24 @@ func (s *Server) execute(w *bufio.Writer, fields []string) (quit bool) {
 		for _, k := range keys {
 			reply("%s", k)
 		}
+	case "HELP":
+		ui.DisplayBanner(w, ui.AppInfo{
+			Name:       "Staash",
+			Version:    "0.1.0",
+			Author:     "CM-exe",
+			Repository: "github.com/CM-exe/staash",
+			License:    "MIT",
+			LastUpdate: "2026-08-26",
+		})
+		reply("Commands:")
+		reply("  PING")
+		reply("  QUIT")
+		reply("  SET <key> <value>")
+		reply("  GET <key>")
+		reply("  DEL <key>")
+		reply("  EXISTS <key>")
+		reply("  KEYS")
+		reply("  HELP")
 	default:
 		reply("ERR unknown command '%s'", cmd)
 	}
