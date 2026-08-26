@@ -496,7 +496,7 @@ The important part is not simply reaching a final feature list. The project is a
 
 Staash is released under the MIT License.
 
-[MIT License](https://github.com/CM-exe/staash/?tab=MIT-1-ov-file&utm_source=chatgpt.com)
+[MIT License](https://github.com/CM-exe/staash/?tab=MIT-1-ov-file)
 
 ---
 
