@@ -1,12 +1,15 @@
 # Staash
 
 <p align="center">
-  <img src="assets/staash-logo.png" alt="Staash logo" width="700">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/staash-logo-dark.png">
+    <img src="assets/staash-logo.png" alt="Staash logo" width="700">
+  </picture>
 </p>
 
-<p align="center">
+<!-- <p align="center">
   <strong>Stash your data. Version everything.</strong>
-</p>
+</p> -->
 
 <p align="center">
   A lightweight, versioned key-value database written in Go.
