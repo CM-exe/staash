@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -9,14 +10,94 @@ import (
 	"github.com/CM-exe/staash/internal/engine"
 	"github.com/CM-exe/staash/internal/object"
 	"github.com/CM-exe/staash/internal/protocol"
+	"github.com/CM-exe/staash/internal/store"
 	"github.com/CM-exe/staash/internal/ui"
 )
 
+// session is the per-connection state. Everything that is not shared between
+// clients lives here; today that is only the open transaction.
 type session struct {
 	eng *engine.Engine
+	tx  *txn
+}
+
+// txn buffers writes until EXEC.
+//
+// overlay maps key -> value, where a nil pointer means "deleted". order keeps
+// insertion order so the emitted batch is deterministic (nice for tests and
+// for reading the WAL by hand).
+type txn struct {
+	overlay map[string]*string
+	order   []string
 }
 
 func newSession(e *engine.Engine) *session { return &session{eng: e} }
+
+func (t *txn) set(key, value string) {
+	if _, ok := t.overlay[key]; !ok {
+		t.order = append(t.order, key)
+	}
+	v := value
+	t.overlay[key] = &v
+}
+
+func (t *txn) del(key string) {
+	if _, ok := t.overlay[key]; !ok {
+		t.order = append(t.order, key)
+	}
+	t.overlay[key] = nil
+}
+
+func (t *txn) mutations() []store.Mutation {
+	muts := make([]store.Mutation, 0, len(t.order))
+	for _, k := range t.order {
+		v := t.overlay[k]
+		if v == nil {
+			muts = append(muts, store.Mutation{Op: store.OpDel, Key: k})
+		} else {
+			muts = append(muts, store.Mutation{Op: store.OpSet, Key: k, Value: *v})
+		}
+	}
+	return muts
+}
+
+// read implements read-your-own-writes inside a transaction.
+func (s *session) read(key string) (string, bool) {
+	if s.tx != nil {
+		if v, ok := s.tx.overlay[key]; ok {
+			if v == nil {
+				return "", false
+			}
+			return *v, true
+		}
+	}
+	return s.eng.Get(key)
+}
+
+// keys merges committed keys with the transaction overlay.
+func (s *session) keys() []string {
+	base := s.eng.Keys()
+	if s.tx == nil {
+		return base
+	}
+	set := make(map[string]struct{}, len(base))
+	for _, k := range base {
+		set[k] = struct{}{}
+	}
+	for k, v := range s.tx.overlay {
+		if v == nil {
+			delete(set, k)
+		} else {
+			set[k] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // dispatch executes one command. The returned error is a *transport* error:
 // if it is non-nil the connection is unusable and must be closed. Command
@@ -24,6 +105,15 @@ func newSession(e *engine.Engine) *session { return &session{eng: e} }
 func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool, err error) {
 	n := len(cmd.Args)
 	argErr := func() error { return w.Error("wrong number of arguments for " + cmd.Name + " command") }
+
+	// Version-control commands change the whole keyspace, so they are refused
+	// while a transaction is buffered rather than given ill-defined semantics.
+	switch cmd.Name {
+	case "COMMIT", "CHECKOUT", "MERGE", "BRANCH":
+		if s.tx != nil {
+			return false, w.Error(cmd.Name + " is not allowed inside a transaction")
+		}
+	}
 
 	switch cmd.Name {
 	case "PING":
@@ -37,6 +127,10 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 		if n != 2 {
 			return false, argErr()
 		}
+		if s.tx != nil {
+			s.tx.set(cmd.Args[0], cmd.Args[1])
+			return false, w.Simple("QUEUED")
+		}
 		if err := s.eng.Set(cmd.Args[0], cmd.Args[1]); err != nil {
 			return false, w.Error(err.Error())
 		}
@@ -45,7 +139,7 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 		if n != 1 {
 			return false, argErr()
 		}
-		v, ok := s.eng.Get(cmd.Args[0])
+		v, ok := s.read(cmd.Args[0])
 		if !ok {
 			return false, w.Nil()
 		}
@@ -53,6 +147,10 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 	case "DEL":
 		if n != 1 {
 			return false, argErr()
+		}
+		if s.tx != nil {
+			s.tx.del(cmd.Args[0])
+			return false, w.Simple("QUEUED")
 		}
 		existed, err := s.eng.Del(cmd.Args[0])
 		if err != nil {
@@ -63,14 +161,15 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 		if n != 1 {
 			return false, argErr()
 		}
-		return false, w.Int(boolToInt(s.eng.Exists(cmd.Args[0])))
+		_, ok := s.read(cmd.Args[0])
+		return false, w.Int(boolToInt(ok))
 	case "KEYS":
 		if n != 0 {
 			return false, argErr()
 		}
-		return false, w.StringArray(s.eng.Keys())
+		return false, w.StringArray(s.keys())
 	case "DBSIZE":
-		return false, w.Int(int64(s.eng.Len()))
+		return false, w.Int(int64(len(s.keys())))
 	case "COMMIT":
 		if n != 1 {
 			return false, argErr()
@@ -174,6 +273,28 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 			return false, w.Error(err.Error())
 		}
 		return false, w.OK()
+	case "BEGIN":
+		if s.tx != nil {
+			return false, w.Error("transaction already open")
+		}
+		s.tx = &txn{overlay: map[string]*string{}}
+		return false, w.OK()
+	case "EXEC":
+		if s.tx == nil {
+			return false, w.Error("EXEC without BEGIN")
+		}
+		muts := s.tx.mutations()
+		s.tx = nil
+		if err := s.eng.Apply(muts); err != nil {
+			return false, w.Error(err.Error())
+		}
+		return false, w.Int(int64(len(muts)))
+	case "ROLLBACK", "DISCARD":
+		if s.tx == nil {
+			return false, w.Error("ROLLBACK without BEGIN")
+		}
+		s.tx = nil
+		return false, w.OK()
 	case "HELP":
 		ui.DisplayBanner(w, ui.AppInfo{
 			Name:       "Staash",
@@ -186,7 +307,6 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 		w.Banner("Commands:")
 		w.Banner("  PING")
 		w.Banner("  QUIT")
-		w.Banner("  HELP")
 		w.Banner("-------------DB---------------------")
 		w.Banner("  SET <key> <value>")
 		w.Banner("  GET <key>")
@@ -203,6 +323,12 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 		w.Banner("  BRANCH <name>")
 		w.Banner("  BRANCHES")
 		w.Banner("  CHECKOUT <name>")
+		w.Banner("-------------TRANSACTION------------")
+		w.Banner("  BEGIN")
+		w.Banner("  EXEC")
+		w.Banner("  ROLLBACK / DISCARD")
+		w.Banner("-------------HELP-------------------")
+		w.Banner("  HELP")
 		return false, nil
 	default:
 		return false, w.Error("unknown command: " + cmd.Name)
