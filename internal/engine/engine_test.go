@@ -3,7 +3,8 @@ package engine
 import (
 	"errors"
 	"fmt"
-	"runtime"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/CM-exe/staash/internal/object"
@@ -42,9 +43,6 @@ func mustGet(t *testing.T, e *Engine, k string) string {
 }
 
 func TestCommitAndReopen(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	dir := t.TempDir()
 	e := openTestEngine(t, dir)
 	mustSet(t, e, "name", "alice")
@@ -64,9 +62,6 @@ func TestCommitAndReopen(t *testing.T) {
 	}
 }
 func TestHistoryReconstruction(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	e := openTestEngine(t, t.TempDir())
 	mustSet(t, e, "k", "v1")
 	first := mustCommit(t, e, "v1")
@@ -93,9 +88,6 @@ func TestHistoryReconstruction(t *testing.T) {
 
 // Unchanged shards must be reused, otherwise commits would cost O(database).
 func TestTreeSharesUnchangedShards(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	e := openTestEngine(t, t.TempDir())
 	for i := 0; i < 200; i++ {
 		mustSet(t, e, fmt.Sprintf("key%03d", i), "v")
@@ -120,9 +112,6 @@ func TestTreeSharesUnchangedShards(t *testing.T) {
 }
 
 func TestBranchCheckout(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	dir := t.TempDir()
 	e := openTestEngine(t, dir)
 	mustSet(t, e, "shared", "base")
@@ -155,9 +144,6 @@ func TestBranchCheckout(t *testing.T) {
 }
 
 func TestThreeWayMergeNoConflict(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	e := openTestEngine(t, t.TempDir())
 	mustSet(t, e, "name", "alice")
 	mustCommit(t, e, "base")
@@ -190,9 +176,6 @@ func TestThreeWayMergeNoConflict(t *testing.T) {
 }
 
 func TestMergeConflict(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	e := openTestEngine(t, t.TempDir())
 	mustSet(t, e, "name", "alice")
 	mustCommit(t, e, "base")
@@ -218,9 +201,6 @@ func TestMergeConflict(t *testing.T) {
 }
 
 func TestMergeIdenticalChangeIsNotAConflict(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	e := openTestEngine(t, t.TempDir())
 	mustSet(t, e, "k", "base")
 	mustCommit(t, e, "base")
@@ -235,10 +215,8 @@ func TestMergeIdenticalChangeIsNotAConflict(t *testing.T) {
 		t.Fatalf("identical changes should merge cleanly: %v", err)
 	}
 }
+
 func TestMergeDeletion(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	e := openTestEngine(t, t.TempDir())
 	mustSet(t, e, "gone", "1")
 	mustSet(t, e, "kept", "1")
@@ -262,10 +240,8 @@ func TestMergeDeletion(t *testing.T) {
 		t.Fatal("merge dropped unrelated keys")
 	}
 }
+
 func TestFastForwardMerge(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	e := openTestEngine(t, t.TempDir())
 	mustSet(t, e, "a", "1")
 	mustCommit(t, e, "base")
@@ -283,5 +259,65 @@ func TestFastForwardMerge(t *testing.T) {
 	}
 	if got := mustGet(t, e, "b"); got != "2" {
 		t.Fatalf("b = %q", got)
+	}
+}
+
+// Uncommitted writes must survive a restart via the WAL.
+func TestUncommittedWritesRecovered(t *testing.T) {
+	dir := t.TempDir()
+	e := openTestEngine(t, dir)
+	mustSet(t, e, "committed", "yes")
+	mustCommit(t, e, "c1")
+	mustSet(t, e, "pending", "yes")
+	if _, err := e.Del("committed"); err != nil {
+		t.Fatal(err)
+	}
+	e.Close() // simulate a crash: no commit, WAL holds two mutations
+	e2 := openTestEngine(t, dir)
+	if v, ok := e2.Get("pending"); !ok || v != "yes" {
+		t.Fatalf("pending lost: %q %v", v, ok)
+	}
+	if e2.Exists("committed") {
+		t.Fatal("delete was not replayed")
+	}
+	if e2.DirtyCount() != 2 {
+		t.Fatalf("dirty = %d, want 2", e2.DirtyCount())
+	}
+}
+
+// A crash between "branch ref updated" and "WAL truncated" must be harmless.
+func TestCrashBetweenCommitAndWALReset(t *testing.T) {
+	dir := t.TempDir()
+	e := openTestEngine(t, dir)
+	mustSet(t, e, "k", "v")
+	mustCommit(t, e, "c1")
+	e.Close()
+	// Re-create the situation by hand: append a record that the (already
+	// committed) state already contains.
+	e2 := openTestEngine(t, dir)
+	mustSet(t, e2, "k", "v")
+	e2.Close()
+	e3 := openTestEngine(t, dir)
+	if got := mustGet(t, e3, "k"); got != "v" {
+		t.Fatalf("k = %q", got)
+	}
+}
+
+func TestStrayTempObjectsAreCleaned(t *testing.T) {
+	dir := t.TempDir()
+	e := openTestEngine(t, dir)
+	mustSet(t, e, "a", "1")
+	mustCommit(t, e, "c")
+	e.Close()
+	stray := filepath.Join(dir, "objects", "tmp", "obj-crash")
+	if err := os.WriteFile(stray, []byte("half written"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e2 := openTestEngine(t, dir)
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Fatal("stray temp file survived recovery")
+	}
+	if got := mustGet(t, e2, "a"); got != "1" {
+		t.Fatalf("a = %q", got)
 	}
 }

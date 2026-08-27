@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -34,9 +33,6 @@ func TestSameContentSameId(t *testing.T) {
 }
 
 func TestStorePutGetDedup(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	s, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -65,9 +61,6 @@ func TestStorePutGetDedup(t *testing.T) {
 }
 
 func TestStoreDetectsCorruption(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("directory sync is not supported on Windows")
-	}
 	dir := t.TempDir()
 	s, err := NewStore(dir)
 	if err != nil {
