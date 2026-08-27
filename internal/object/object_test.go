@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -32,6 +33,9 @@ func TestSameContentSameId(t *testing.T) {
 }
 
 func TestStorePutGetDedup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory sync is not supported on Windows")
+	}
 	s, err := NewStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -60,6 +64,9 @@ func TestStorePutGetDedup(t *testing.T) {
 }
 
 func TestStoreDetectsCorruption(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory sync is not supported on Windows")
+	}
 	dir := t.TempDir()
 	s, err := NewStore(dir)
 	if err != nil {
@@ -76,5 +83,28 @@ func TestStoreDetectsCorruption(t *testing.T) {
 	}
 	if _, _, err := s.Get(id); err == nil {
 		t.Fatal("expected corruption to be detected")
+	}
+}
+
+func TestTreeRoundTripAndOrdering(t *testing.T) {
+	var id1, id2 ID
+	id1[0], id2[0] = 1, 2
+	a := NewTree([]Entry{
+		{Name: "zeta", Kind: EntryBlob, ID: id1},
+		{Name: "alpha", Kind: EntryTree, ID: id2},
+	})
+	b := NewTree([]Entry{
+		{Name: "alpha", Kind: EntryTree, ID: id2},
+		{Name: "zeta", Kind: EntryBlob, ID: id1},
+	})
+	if !bytes.Equal(a.Encode(), b.Encode()) {
+		t.Fatal("tree encoding must not depend on insertion order")
+	}
+	dec, err := DecodeTree(a.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dec.Entries) != 2 || dec.Entries[0].Name != "alpha" || dec.Entries[1].ID != id1 {
+		t.Fatalf("bad round trip: %+v", dec.Entries)
 	}
 }

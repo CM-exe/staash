@@ -98,3 +98,21 @@ func (s *Store) ApplyBatch(muts []Mutation) {
 		}
 	}
 }
+
+// Snapshot returns a copy of the whole keyspace.
+func (s *Store) Snapshot() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make(map[string]string, len(s.data))
+	for k, v := range s.data {
+		out[k] = v
+	}
+	return out
+}
+
+// Replace swaps the entire keyspace. Used by CHECKOUT and by startup recovery.
+func (s *Store) Replace(data map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.data = data
+}
