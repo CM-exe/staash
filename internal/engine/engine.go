@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -271,6 +272,74 @@ func (e *Engine) HeadInfo() (branch string, id object.ID, hasCommit bool, err er
 	}
 	id, hasCommit, err = e.refs.ReadBranch(branch)
 	return branch, id, hasCommit, err
+}
+
+// Branch creates a new branch pointing at the current commit. Creating a
+// branch writes 65 bytes and copies no data: history is immutable and shared.
+func (e *Engine) Branch(name string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if _, exists, err := e.refs.ReadBranch(name); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("%w: %s", ErrBranchExists, name)
+	}
+	cur, err := e.refs.Head()
+	if err != nil {
+		return err
+	}
+	id, ok, err := e.refs.ReadBranch(cur)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNoCommits
+	}
+	return e.refs.SetBranch(name, id)
+}
+
+func (e *Engine) Branches() ([]string, string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	names, err := e.refs.ListBranches()
+	if err != nil {
+		return nil, "", err
+	}
+	cur, err := e.refs.Head()
+	if err != nil {
+		return nil, "", err
+	}
+	return names, cur, nil
+}
+
+// Checkout switches branches and replaces the in-memory state.
+//
+// Uncommitted changes are refused rather than carried across or silently
+// discarded: with no staging area there is no way to tell the two intents
+// apart, and losing writes silently is the worse failure.
+func (e *Engine) Checkout(name string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if len(e.dirty) > 0 {
+		return fmt.Errorf("%w (%d keys); COMMIT or ROLLBACK first", ErrDirty, len(e.dirty))
+	}
+	id, ok, err := e.refs.ReadBranch(name)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNoSuchBranch, name)
+	}
+	data, err := e.materialize(id)
+	if err != nil {
+		return err
+	}
+	if err := e.refs.SetHead(name); err != nil {
+		return err
+	}
+	e.store.Replace(data)
+	return nil
 }
 
 // finishCommit writes the commit object, moves the branch and clears the WAL.

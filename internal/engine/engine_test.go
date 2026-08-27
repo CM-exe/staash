@@ -117,3 +117,35 @@ func TestTreeSharesUnchangedShards(t *testing.T) {
 		t.Fatalf("only %d/%d shards reused", same, len(root1.Entries))
 	}
 }
+
+func TestBranchCheckout(t *testing.T) {
+	dir := t.TempDir()
+	e := openTestEngine(t, dir)
+	mustSet(t, e, "shared", "base")
+	mustCommit(t, e, "base")
+	if err := e.Branch("feature"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Checkout("feature"); err != nil {
+		t.Fatal(err)
+	}
+	mustSet(t, e, "feature-only", "1")
+	mustCommit(t, e, "on feature")
+	if err := e.Checkout("main"); err != nil {
+		t.Fatal(err)
+	}
+	if e.Exists("feature-only") {
+		t.Fatal("feature key leaked into main")
+	}
+	if err := e.Checkout("feature"); err != nil {
+		t.Fatal(err)
+	}
+	if !e.Exists("feature-only") {
+		t.Fatal("feature key lost")
+	}
+	// Checkout with uncommitted work must be refused.
+	mustSet(t, e, "scratch", "x")
+	if err := e.Checkout("main"); err == nil {
+		t.Fatal("expected checkout to be refused while dirty")
+	}
+}

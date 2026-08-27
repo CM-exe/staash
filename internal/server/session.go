@@ -144,6 +144,36 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 		}
 		return false, w.Bulk(fmt.Sprintf("branch %s, %d uncommitted key(s), %d key(s) total",
 			branch, s.eng.DirtyCount(), s.eng.Len()))
+	case "BRANCH":
+		if n != 1 {
+			return false, argErr()
+		}
+		if err := s.eng.Branch(cmd.Args[0]); err != nil {
+			return false, w.Error(err.Error())
+		}
+		return false, w.OK()
+	case "BRANCHES":
+		names, cur, err := s.eng.Branches()
+		if err != nil {
+			return false, w.Error(err.Error())
+		}
+		out := make([]string, 0, len(names))
+		for _, name := range names {
+			if name == cur {
+				out = append(out, "* "+name)
+			} else {
+				out = append(out, "  "+name)
+			}
+		}
+		return false, w.StringArray(out)
+	case "CHECKOUT":
+		if n != 1 {
+			return false, argErr()
+		}
+		if err := s.eng.Checkout(cmd.Args[0]); err != nil {
+			return false, w.Error(err.Error())
+		}
+		return false, w.OK()
 	case "HELP":
 		ui.DisplayBanner(w, ui.AppInfo{
 			Name:       "Staash",
@@ -153,21 +183,26 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 			License:    "MIT",
 			LastUpdate: "2026-08-26",
 		})
-		w.Simple("Commands:")
-		w.Simple("  PING")
-		w.Simple("  QUIT")
-		w.Simple("  SET <key> <value>")
-		w.Simple("  GET <key>")
-		w.Simple("  DEL <key>")
-		w.Simple("  EXISTS <key>")
-		w.Simple("  KEYS")
-		w.Simple("  DBSIZE")
-		w.Simple("  COMMIT <message>")
-		w.Simple("  LOG [limit]")
-		w.Simple("  SHOW [commit-id]")
-		w.Simple("  HEAD")
-		w.Simple("  STATUS")
-		w.Simple("  HELP")
+		w.Banner("Commands:")
+		w.Banner("  PING")
+		w.Banner("  QUIT")
+		w.Banner("  HELP")
+		w.Banner("-------------DB---------------------")
+		w.Banner("  SET <key> <value>")
+		w.Banner("  GET <key>")
+		w.Banner("  DEL <key>")
+		w.Banner("  EXISTS <key>")
+		w.Banner("  KEYS")
+		w.Banner("  DBSIZE")
+		w.Banner("-------------VERSION----------------")
+		w.Banner("  COMMIT <message>")
+		w.Banner("  LOG [limit]")
+		w.Banner("  SHOW [commit-id]")
+		w.Banner("  HEAD")
+		w.Banner("  STATUS")
+		w.Banner("  BRANCH <name>")
+		w.Banner("  BRANCHES")
+		w.Banner("  CHECKOUT <name>")
 		return false, nil
 	default:
 		return false, w.Error("unknown command: " + cmd.Name)
