@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"runtime"
 	"testing"
@@ -119,6 +120,9 @@ func TestTreeSharesUnchangedShards(t *testing.T) {
 }
 
 func TestBranchCheckout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory sync is not supported on Windows")
+	}
 	dir := t.TempDir()
 	e := openTestEngine(t, dir)
 	mustSet(t, e, "shared", "base")
@@ -147,5 +151,137 @@ func TestBranchCheckout(t *testing.T) {
 	mustSet(t, e, "scratch", "x")
 	if err := e.Checkout("main"); err == nil {
 		t.Fatal("expected checkout to be refused while dirty")
+	}
+}
+
+func TestThreeWayMergeNoConflict(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory sync is not supported on Windows")
+	}
+	e := openTestEngine(t, t.TempDir())
+	mustSet(t, e, "name", "alice")
+	mustCommit(t, e, "base")
+	_ = e.Branch("feature")
+	mustSet(t, e, "city", "berlin") // on main
+	mustCommit(t, e, "main change")
+	_ = e.Checkout("feature")
+	mustSet(t, e, "email", "a@example.com")
+	mustCommit(t, e, "feature change")
+	_ = e.Checkout("main")
+	res, err := e.Merge("feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Kind != "merge" {
+		t.Fatalf("kind = %s", res.Kind)
+	}
+	for k, want := range map[string]string{"name": "alice", "city": "berlin", "email": "a@example.com"} {
+		if got := mustGet(t, e, k); got != want {
+			t.Fatalf("%s = %q want %q", k, got, want)
+		}
+	}
+	c, err := e.Show(res.Commit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.Parents) != 2 {
+		t.Fatalf("merge commit has %d parents", len(c.Parents))
+	}
+}
+
+func TestMergeConflict(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory sync is not supported on Windows")
+	}
+	e := openTestEngine(t, t.TempDir())
+	mustSet(t, e, "name", "alice")
+	mustCommit(t, e, "base")
+	_ = e.Branch("feature")
+	mustSet(t, e, "name", "bob")
+	mustCommit(t, e, "main renames")
+	_ = e.Checkout("feature")
+	mustSet(t, e, "name", "charlie")
+	mustCommit(t, e, "feature renames")
+	_ = e.Checkout("main")
+	_, err := e.Merge("feature")
+	var conflict *ErrMergeConflict
+	if !errors.As(err, &conflict) {
+		t.Fatalf("err = %v, want conflict", err)
+	}
+	if len(conflict.Keys) != 1 || conflict.Keys[0] != "name" {
+		t.Fatalf("conflict keys = %v", conflict.Keys)
+	}
+	// The failed merge must leave the database untouched.
+	if got := mustGet(t, e, "name"); got != "bob" {
+		t.Fatalf("name = %q after aborted merge", got)
+	}
+}
+
+func TestMergeIdenticalChangeIsNotAConflict(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory sync is not supported on Windows")
+	}
+	e := openTestEngine(t, t.TempDir())
+	mustSet(t, e, "k", "base")
+	mustCommit(t, e, "base")
+	_ = e.Branch("feature")
+	mustSet(t, e, "k", "same")
+	mustCommit(t, e, "main")
+	_ = e.Checkout("feature")
+	mustSet(t, e, "k", "same")
+	mustCommit(t, e, "feature")
+	_ = e.Checkout("main")
+	if _, err := e.Merge("feature"); err != nil {
+		t.Fatalf("identical changes should merge cleanly: %v", err)
+	}
+}
+func TestMergeDeletion(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory sync is not supported on Windows")
+	}
+	e := openTestEngine(t, t.TempDir())
+	mustSet(t, e, "gone", "1")
+	mustSet(t, e, "kept", "1")
+	mustCommit(t, e, "base")
+	_ = e.Branch("feature")
+	_ = e.Checkout("feature")
+	if _, err := e.Del("gone"); err != nil {
+		t.Fatal(err)
+	}
+	mustCommit(t, e, "delete on feature")
+	_ = e.Checkout("main")
+	mustSet(t, e, "other", "1")
+	mustCommit(t, e, "main change")
+	if _, err := e.Merge("feature"); err != nil {
+		t.Fatal(err)
+	}
+	if e.Exists("gone") {
+		t.Fatal("deletion was not merged")
+	}
+	if !e.Exists("kept") || !e.Exists("other") {
+		t.Fatal("merge dropped unrelated keys")
+	}
+}
+func TestFastForwardMerge(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory sync is not supported on Windows")
+	}
+	e := openTestEngine(t, t.TempDir())
+	mustSet(t, e, "a", "1")
+	mustCommit(t, e, "base")
+	_ = e.Branch("feature")
+	_ = e.Checkout("feature")
+	mustSet(t, e, "b", "2")
+	mustCommit(t, e, "feature work")
+	_ = e.Checkout("main")
+	res, err := e.Merge("feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Kind != "fast-forward" {
+		t.Fatalf("kind = %s", res.Kind)
+	}
+	if got := mustGet(t, e, "b"); got != "2" {
+		t.Fatalf("b = %q", got)
 	}
 }

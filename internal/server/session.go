@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -295,6 +296,19 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 		}
 		s.tx = nil
 		return false, w.OK()
+	case "MERGE":
+		if n != 1 {
+			return false, argErr()
+		}
+		res, err := s.eng.Merge(cmd.Args[0])
+		if err != nil {
+			var conflict *engine.ErrMergeConflict
+			if errors.As(err, &conflict) {
+				return false, w.Error("CONFLICT " + strings.Join(conflict.Keys, " "))
+			}
+			return false, w.Error(err.Error())
+		}
+		return false, w.Simple(res.Kind + " " + res.Commit.Short())
 	case "HELP":
 		ui.DisplayBanner(w, ui.AppInfo{
 			Name:       "Staash",
@@ -304,31 +318,32 @@ func (s *session) dispatch(w *protocol.Writer, cmd protocol.Command) (quit bool,
 			License:    "MIT",
 			LastUpdate: "2026-08-26",
 		})
-		w.Banner("Commands:")
-		w.Banner("  PING")
-		w.Banner("  QUIT")
-		w.Banner("-------------DB---------------------")
-		w.Banner("  SET <key> <value>")
-		w.Banner("  GET <key>")
-		w.Banner("  DEL <key>")
-		w.Banner("  EXISTS <key>")
-		w.Banner("  KEYS")
-		w.Banner("  DBSIZE")
-		w.Banner("-------------VERSION----------------")
-		w.Banner("  COMMIT <message>")
-		w.Banner("  LOG [limit]")
-		w.Banner("  SHOW [commit-id]")
-		w.Banner("  HEAD")
-		w.Banner("  STATUS")
-		w.Banner("  BRANCH <name>")
-		w.Banner("  BRANCHES")
-		w.Banner("  CHECKOUT <name>")
-		w.Banner("-------------TRANSACTION------------")
-		w.Banner("  BEGIN")
-		w.Banner("  EXEC")
-		w.Banner("  ROLLBACK / DISCARD")
-		w.Banner("-------------HELP-------------------")
-		w.Banner("  HELP")
+		w.Simple("Commands:")
+		w.Simple("  PING")
+		w.Simple("  QUIT")
+		w.Simple("-------------DB---------------------")
+		w.Simple("  SET <key> <value>")
+		w.Simple("  GET <key>")
+		w.Simple("  DEL <key>")
+		w.Simple("  EXISTS <key>")
+		w.Simple("  KEYS")
+		w.Simple("  DBSIZE")
+		w.Simple("-------------VERSION----------------")
+		w.Simple("  COMMIT <message>")
+		w.Simple("  LOG [limit]")
+		w.Simple("  SHOW [commit-id]")
+		w.Simple("  HEAD")
+		w.Simple("  STATUS")
+		w.Simple("  BRANCH <name>")
+		w.Simple("  BRANCHES")
+		w.Simple("  CHECKOUT <name>")
+		w.Simple("  MERGE <name>")
+		w.Simple("-------------TRANSACTION------------")
+		w.Simple("  BEGIN")
+		w.Simple("  EXEC")
+		w.Simple("  ROLLBACK / DISCARD")
+		w.Simple("-------------HELP-------------------")
+		w.Simple("  HELP")
 		return false, nil
 	default:
 		return false, w.Error("unknown command: " + cmd.Name)
