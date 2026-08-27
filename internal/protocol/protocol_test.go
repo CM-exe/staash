@@ -57,3 +57,21 @@ func TestWriter(t *testing.T) {
 		t.Errorf("got %q\nwant %q", sb.String(), want)
 	}
 }
+
+// FuzzParse asserts only that the parser never panics and never invents a
+// command out of nothing.
+func FuzzParse(f *testing.F) {
+	seeds := []string{"", "SET a 1", `SET a "b c"`, `GET "`, "\x00\x01", strings.Repeat("a ", 1000)}
+	for _, s := range seeds {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, line string) {
+		cmd, err := Parse(line)
+		if err != nil {
+			return
+		}
+		if cmd.Name == "" {
+			t.Fatalf("parsed %q into an empty command name", line)
+		}
+	})
+}

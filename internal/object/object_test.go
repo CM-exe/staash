@@ -122,3 +122,18 @@ func TestCommitRoundTrip(t *testing.T) {
 		t.Fatalf("time = %v want %v", got.Time, now)
 	}
 }
+
+func FuzzDecodeTree(f *testing.F) {
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, payload []byte) {
+		tree, err := DecodeTree(payload)
+		if err != nil {
+			return
+		}
+		// Anything that decodes must re-encode to the same bytes,
+		// modulo the sorting invariant.
+		if !bytes.Equal(NewTree(tree.Entries).Encode(), tree.Encode()) {
+			t.Fatal("decode/encode is not stable")
+		}
+	})
+}
