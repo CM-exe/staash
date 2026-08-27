@@ -3,6 +3,7 @@ package fsutil
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // SyncDir fsyncs a directory so that renames and creations inside it are
@@ -14,6 +15,11 @@ func SyncDir(dir string) error {
 		return err
 	}
 	defer d.Close()
+	if runtime.GOOS == "windows" {
+		// Windows does not support fsyncing directories, but it does guarantee
+		// that renames are durable once the file itself has been synced.
+		return nil
+	}
 	return d.Sync()
 }
 

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 func TestEncodeDecodeRoundTrip(t *testing.T) {
@@ -106,5 +107,25 @@ func TestTreeRoundTripAndOrdering(t *testing.T) {
 	}
 	if len(dec.Entries) != 2 || dec.Entries[0].Name != "alpha" || dec.Entries[1].ID != id1 {
 		t.Fatalf("bad round trip: %+v", dec.Entries)
+	}
+}
+
+func TestCommitRoundTrip(t *testing.T) {
+	var tree, parent ID
+	tree[0], parent[0] = 7, 8
+	now := time.Now().UTC().Truncate(time.Nanosecond)
+	c := &Commit{Tree: tree, Parents: []ID{parent}, Time: now, Message: "hello\nmulti line"}
+	got, err := DecodeCommit(c.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tree != tree || len(got.Parents) != 1 || got.Parents[0] != parent {
+		t.Fatalf("bad ids: %+v", got)
+	}
+	if got.Message != c.Message {
+		t.Fatalf("message = %q", got.Message)
+	}
+	if !got.Time.Equal(now) {
+		t.Fatalf("time = %v want %v", got.Time, now)
 	}
 }

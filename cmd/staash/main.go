@@ -24,6 +24,19 @@ func main() {
 		log.Fatalf("open database: %v", err)
 	}
 	defer eng.Close()
+
+	branch, id, hasCommit, err := eng.HeadInfo()
+	if err != nil {
+		log.Fatalf("read HEAD: %v", err)
+	}
+	if hasCommit {
+		log.Printf("recovered: branch=%s head=%s keys=%d uncommitted=%d",
+			branch, id.Short(), eng.Len(), eng.DirtyCount())
+	} else {
+		log.Printf("new database: branch=%s keys=%d uncommitted=%d",
+			branch, eng.Len(), eng.DirtyCount())
+	}
+
 	srv := server.New(eng, server.Config{Addr: *addr})
 	if err := srv.Listen(); err != nil {
 		log.Fatal(err)
